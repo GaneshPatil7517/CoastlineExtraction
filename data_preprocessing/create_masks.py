@@ -219,7 +219,7 @@ def get_ndwi_label(image_path, points_path, ksize=100, blurring=True, out_dir="r
     # For areas with sliding windows, use the sliding window result where it detects water
     # This preserves the global classification but enhances it with local precision
     sliding_windows = np.where(buffer_numbers > 0, 1, 0)
-    water_areas = np.where(label == 1, 1, 0)  # Areas where sliding window detected water
+    water_areas = np.where(label_majority == 1, 1, 0)  # Areas where sliding window majority detected water
     ndwi_concatenated = np.where((sliding_windows == 1) & (water_areas == 1), 1, ndwi_concatenated)
 
     print(f"Green min: {green.min():.2f}, Green max: {green.max():.2f}")

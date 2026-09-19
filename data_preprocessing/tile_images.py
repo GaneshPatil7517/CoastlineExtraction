@@ -42,6 +42,9 @@ from load_config import load_config, get_create_mask_output_folder, get_tile_ima
 
 # adapted from https://gis.stackexchange.com/questions/285499/how-to-split-multiband-image-into-image-tiles-using-rasterio
 def make_tiles(image, output_folder, tile_height=512, tile_width=512, overlap=0.5, skip_no_data=False):
+    if not (0.0 <= overlap < 1.0):
+        raise ValueError("overlap must be in the range [0.0, 1.0)")
+
     with rio.open(image) as src:
         filepath, filename = os.path.split(image)
         file_base, file_extension = os.path.splitext(filename)
@@ -58,14 +61,14 @@ def make_tiles(image, output_folder, tile_height=512, tile_width=512, overlap=0.
             tiles.append((curr_window.intersection(overall_window), curr_transform))
         for i in range(len(tiles)):
             window, transform = tiles[i]
-            meta['transform'] = transform
-            meta['width'] = tile_width
-            meta['height'] = tile_height
             window_data = src.read(window=window)
             # optionally skip tiles with no data values
             if skip_no_data:
                 if 0 in window_data[..., :-1] or np.all(window_data == 0):
                     continue
+            meta['transform'] = transform
+            meta['width'] = window_data.shape[-1]
+            meta['height'] = window_data.shape[-2]
             out_name = file_base + "_" + str(i + 1).zfill(2) + "-of-" + str(len(tiles)) + file_extension
             out_path = os.path.join(output_folder, out_name)
             with rio.open(out_path, 'w', **meta) as dst:
@@ -75,6 +78,9 @@ def make_tiles_tiff(image_path, output_folder, tile_height=512, tile_width=512, 
     """
     Create tiles from TIFF images (for both images and masks)
     """
+    if not (0.0 <= overlap < 1.0):
+        raise ValueError("overlap must be in the range [0.0, 1.0)")
+
     with rio.open(image_path) as src:
         filepath, filename = os.path.split(image_path)
         file_base, file_extension = os.path.splitext(filename)
@@ -95,20 +101,20 @@ def make_tiles_tiff(image_path, output_folder, tile_height=512, tile_width=512, 
         # Save tiles
         for i in range(len(tiles)):
             window, transform = tiles[i]
-            meta['transform'] = transform
-            meta['width'] = tile_width
-            meta['height'] = tile_height
-            
-            # For masks, ensure single band
-            if is_mask:
-                meta['count'] = 1
-                meta['dtype'] = 'uint8'
-            
             window_data = src.read(window=window)
             
             if skip_no_data:
                 if np.all(window_data == 0) or (is_mask and np.sum(window_data) == 0):
                     continue
+            
+            meta['transform'] = transform
+            meta['width'] = window_data.shape[-1]
+            meta['height'] = window_data.shape[-2]
+            
+            # For masks, ensure single band
+            if is_mask:
+                meta['count'] = 1
+                meta['dtype'] = 'uint8'
             
             # Create output filename
             if is_mask:
@@ -121,10 +127,69 @@ def make_tiles_tiff(image_path, output_folder, tile_height=512, tile_width=512, 
             with rio.open(out_path, 'w', **meta) as dst:
                 if is_mask:
                     # For masks, write only the first band
-                    dst.write(window_data[0], 1)
+                    dst.write(window_data[0:1].astype('uint8'))
                 else:
                     # For images, write all bands
                     dst.write(window_data)
+
+def tile_image_and_mask_pair(image_path, mask_path, output_folder, tile_height=512, tile_width=512, overlap=0.5, skip_no_data=False):
+    """
+    Create synchronized tiles from an image and its corresponding mask.
+    Ensures skip_no_data filters both files identically so pairs remain in sync.
+    """
+    if not (0.0 <= overlap < 1.0):
+        raise ValueError("overlap must be in the range [0.0, 1.0)")
+
+    with rio.open(image_path) as src_img, rio.open(mask_path) as src_mask:
+        img_base = os.path.splitext(os.path.basename(image_path))[0]
+        
+        img_meta = src_img.meta.copy()
+        mask_meta = src_mask.meta.copy()
+        mask_meta.update(count=1, dtype='uint8')
+
+        num_cols, num_rows = src_img.width, src_img.height
+        overall_window = windows.Window(col_off=0, row_off=0, width=num_cols, height=num_rows)
+        
+        step_x = max(1, int(tile_width * (1.0 - overlap)))
+        step_y = max(1, int(tile_height * (1.0 - overlap)))
+        offsets = list(product(range(0, num_cols, step_x), range(0, num_rows, step_y)))
+        
+        valid_tiles = []
+        for col_off, row_off in offsets:
+            curr_window = windows.Window(col_off=col_off, row_off=row_off, width=tile_width, height=tile_height)
+            intersected = curr_window.intersection(overall_window)
+            curr_transform = windows.transform(intersected, src_img.transform)
+            
+            img_data = src_img.read(window=intersected)
+            mask_data = src_mask.read(window=intersected)
+            
+            if skip_no_data:
+                if np.all(img_data == 0) or np.all(mask_data == 0) or (0 in img_data[..., :-1]):
+                    continue
+            
+            valid_tiles.append((intersected, curr_transform, img_data, mask_data))
+        
+        total_tiles = len(valid_tiles)
+        for i, (win, trans, img_data, mask_data) in enumerate(valid_tiles):
+            # Image tile
+            img_tile_meta = img_meta.copy()
+            img_tile_meta['transform'] = trans
+            img_tile_meta['width'] = img_data.shape[-1]
+            img_tile_meta['height'] = img_data.shape[-2]
+            img_out_name = f"{img_base}_{str(i + 1).zfill(2)}-of-{str(total_tiles)}.tif"
+            img_out_path = os.path.join(output_folder, img_out_name)
+            with rio.open(img_out_path, 'w', **img_tile_meta) as dst:
+                dst.write(img_data)
+            
+            # Mask tile
+            mask_tile_meta = mask_meta.copy()
+            mask_tile_meta['transform'] = trans
+            mask_tile_meta['width'] = mask_data.shape[-1]
+            mask_tile_meta['height'] = mask_data.shape[-2]
+            mask_out_name = f"{img_base}_mask_{str(i + 1).zfill(2)}-of-{str(total_tiles)}.tif"
+            mask_out_path = os.path.join(output_folder, mask_out_name)
+            with rio.open(mask_out_path, 'w', **mask_tile_meta) as dst:
+                dst.write(mask_data[0:1].astype('uint8'))
 
 def make_tiles_png(image_path, output_folder, tile_height=512, tile_width=512):
     """
@@ -220,15 +285,15 @@ def process_tiling(mask_folder, georef_folder, output_folder, tile_height=512, t
         print(f"  Mask: {os.path.basename(mask_path)}")
         
         try:
-            # Process image
-            print("  Tiling image...")
-            make_tiles_tiff(image_path, output_folder, tile_height=tile_height, tile_width=tile_width,
-                            is_mask=False, overlap=overlap, skip_no_data=skip_no_data)
-            
-            # Process mask
-            print("  Tiling mask...")
-            make_tiles_tiff(mask_path, output_folder, tile_height=tile_height, tile_width=tile_width,
-                            is_mask=True, overlap=overlap, skip_no_data=skip_no_data)
+            tile_image_and_mask_pair(
+                image_path=image_path,
+                mask_path=mask_path,
+                output_folder=output_folder,
+                tile_height=tile_height,
+                tile_width=tile_width,
+                overlap=overlap,
+                skip_no_data=skip_no_data
+            )
             
             processed_count += 1
             print(f"  ✓ Successfully processed {os.path.basename(mask_path)}")
@@ -239,6 +304,7 @@ def process_tiling(mask_folder, georef_folder, output_folder, tile_height=512, t
     
     print(f"\nTiling complete! Processed {processed_count} image-mask pairs.")
     print(f"Output saved to: {output_folder}")
+
 
 def main():
     config = load_config()

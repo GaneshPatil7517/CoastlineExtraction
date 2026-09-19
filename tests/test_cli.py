@@ -3,6 +3,8 @@ import sys
 import os
 import pytest
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 PYTHON_EXE = sys.executable
 
 def run_script_help(script_path):
@@ -64,3 +66,11 @@ def test_add_mask_band_cli_help():
     assert "--mask-dir" in res.stdout
     assert "--output-dir" in res.stdout
     assert "--limit" in res.stdout
+
+def test_tile_images_overlap_validation():
+    from data_preprocessing.tile_images import make_tiles_tiff
+    with pytest.raises(ValueError, match="overlap must be in the range"):
+        make_tiles_tiff("non_existent.tif", "dummy", overlap=1.0)
+    with pytest.raises(ValueError, match="overlap must be in the range"):
+        make_tiles_tiff("non_existent.tif", "dummy", overlap=-0.1)
+

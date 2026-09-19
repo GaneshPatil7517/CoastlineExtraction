@@ -190,7 +190,7 @@ def get_ndwi_label(image_path, points_path, ksize=100, blurring=True, out_dir="r
     
     # Concatenate the remaining sliding window images (unlabeled parts) from NDWI classified.
     sliding_windows = np.where(buffer_numbers > 0, 1, 0)
-    ndwi_concatenated = np.where(sliding_windows == 1, label, ndwi_classified)
+    ndwi_concatenated = np.where(sliding_windows == 1, label_majority, ndwi_classified)
 
     print(f"Green min: {green.min():.2f}, Green max: {green.max():.2f}")
     print(f"NIR min: {nir.min():.2f}, NIR max: {nir.max():.2f}")
